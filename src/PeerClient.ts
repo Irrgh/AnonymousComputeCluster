@@ -1,23 +1,33 @@
 import { Hash, Identity } from './Identity';
+import { PeerConnection } from './PeerConnection';
+
+export const domain: string = "adbc-acc-test.duckdns.org";
 
 export class PeerClient {
 
     private signal: WebSocket;
     private conf: RTCConfiguration;
-    private known: Map<Hash, RTCPeerConnection> = new Map();
+    private known: Map<Hash, PeerConnection> = new Map();
     private sessionId: Promise<Hash>;
 
     constructor(private user: Identity) {
         this.sessionId = this.user.generateSessionId();
         this.conf = {
             iceServers: [
-                { urls: 'stun:stun.l.google.com:19302' },
                 {
-                    urls: "turns:openrelay.metered.ca:443",
-                    username: "openrelayproject",
-                    credential: "openrelayproject"
+                    urls: `stun:${domain}:3478`
+                },
+                {
+                    urls: `turn:${domain}:3478`,
+                    username:"test",
+                    credential: "test"
+                },
+                {
+                    urls: `turns:${domain}:5349`,
+                    username: "test",
+                    credential: "test"
                 }
-            ]
+            ],
         };
 
         this.signal = new WebSocket(`wss://${window.location.hostname}:${window.location.port}`);
@@ -42,97 +52,32 @@ export class PeerClient {
     }
 
     private offerConnectionToRemoteHost = async (remote: Hash) => {
-        const peer: RTCPeerConnection = new RTCPeerConnection(this.conf);
-
-        peer.createDataChannel("control");
-
-        peer.addEventListener("icecandidate", async (message) => {
-            if (message.candidate) {
-                this.signal.send(JSON.stringify({
-                    type: "candidate",
-                    src: await this.sessionId,
-                    dest: remote,
-                    candidate: message.candidate
-                }));
-                console.log(message.candidate.candidate);
-            }
-        });
-        peer.addEventListener("icegatheringstatechange", () => {
-            console.log("ICE gathering:", peer.iceGatheringState);
-        });
-
-        peer.addEventListener("connectionstatechange", () => {
-            console.log(`New connection state: ${peer.connectionState}`);
-        });
-
-
-        const offer: RTCSessionDescriptionInit = await peer.createOffer();
-        await peer.setLocalDescription(offer);
-        this.signal.send(JSON.stringify({
-            type: "offer",
-            offer: offer,
-            src: await this.sessionId,
-            dest: remote
-        }));
+        const peer: PeerConnection = new PeerConnection(await this.sessionId, remote, this.conf, this.signal);
+        peer.createOffer();
         this.known.set(remote, peer);
     }
 
 
     private sendAnswer = async (offer: RTCSessionDescriptionInit, remote: Hash) => {
-        const peer: RTCPeerConnection = new RTCPeerConnection(this.conf);
-
-        peer.addEventListener("icecandidate", async (message) => {
-            if (message.candidate) {
-                this.signal.send(JSON.stringify({
-                    type: "candidate",
-                    src: await this.sessionId,
-                    dest: remote,
-                    candidate: message.candidate
-                }));
-                console.log(message.candidate.candidate);
-            }
-        });
-        peer.addEventListener("icegatheringstatechange", () => {
-            console.log("ICE gathering:", peer.iceGatheringState);
-        });
-        peer.addEventListener("connectionstatechange", () => {
-            console.log(`New connection state: ${peer.connectionState}`);
-        });
-
-
-        await peer.setRemoteDescription(new RTCSessionDescription(offer));
-        const answer: RTCSessionDescriptionInit = await peer.createAnswer();
-        await peer.setLocalDescription(answer);
-        this.signal.send(JSON.stringify({
-            type: "answer",
-            answer: answer,
-            src: await this.sessionId,
-            dest: remote
-        }));
+        const peer: PeerConnection = new PeerConnection(await this.sessionId, remote, this.conf, this.signal);
+        peer.createAnswer(offer);
         this.known.set(remote, peer);
-
-
-
     }
 
     private acceptAnswer = async (answer: RTCSessionDescriptionInit, remote: Hash) => {
         if (!this.known.has(remote)) {
             throw new Error(`Remote client should be on the list of know clients.`);
         }
-        const peer: RTCPeerConnection = this.known.get(remote)!;
-        await peer.setRemoteDescription(new RTCSessionDescription(answer));
+        const peer: PeerConnection = this.known.get(remote)!;
+        peer.acceptAnswer(answer);
     }
 
     private addCandidate = async (candidate: RTCIceCandidate, remote: Hash) => {
         if (!this.known.has(remote)) {
-            this.known.set(remote, new RTCPeerConnection(this.conf));
+            console.warn("Candidate for unknown peer", remote);
         }
-        const peer: RTCPeerConnection = this.known.get(remote)!;
-        try {
-            await peer.addIceCandidate(candidate);
-        } catch (e) {
-            console.error('Error adding received ice candidate', e);
-        }
+        const peer: PeerConnection = this.known.get(remote)!;
+        peer.addCandidate(candidate);
     }
 
     private message = async (event: MessageEvent) => {

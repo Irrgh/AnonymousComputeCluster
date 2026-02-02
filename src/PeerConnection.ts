@@ -19,18 +19,34 @@ export class PeerConnection {
             if (e.candidate) {
                 this.ws.send(JSON.stringify({
                     type: "candidate",
+                    src: this.local,
                     dest: this.remote,
                     candidate: e.candidate
                 }));
             }
         });
 
-        this.pc.addEventListener("connectionstatechange", () => {
-            console.log(`[${this.remote}] PC`, this.pc.connectionState);
+        this.pc.addEventListener("icegatheringstatechange", () => {
+            //console.log(`[${this.remote}] ICE gathering`, this.pc.iceGatheringState);
+        })
+
+        this.pc.addEventListener("connectionstatechange", async () => {
+            if (this.pc.connectionState === 'connected') {
+                const pair = this.pc.sctp?.transport.iceTransport.getSelectedCandidatePair()
+
+                const local = `${pair?.local.type} : ${pair?.local.protocol}`;
+                const remote = `${pair?.remote.type} : ${pair?.remote.protocol}`;
+
+                console.log(local,remote);
+            }
         });
 
-        this.pc.addEventListener("iceconnectionstatechange", () => {
-            console.log(`[${this.remote}] ICE`, this.pc.iceConnectionState);
+        this.pc.addEventListener("icecandidateerror", (e) => {
+
+        });
+
+        this.pc.addEventListener("iceconnectionstatechange", async () => {
+            //console.log(`[${this.remote}] ICE`, this.pc.iceConnectionState);
         });
 
         this.pc.addEventListener("datachannel", (e) => {
@@ -47,10 +63,15 @@ export class PeerConnection {
 
         const offer = await this.pc.createOffer();
         await this.pc.setLocalDescription(offer);
+        this.ws.send(JSON.stringify({
+            type: "offer",
+            offer: offer,
+            src: this.local,
+            dest: this.remote
+        }));
     }
 
     public createAnswer = async (offer: RTCSessionDescriptionInit) => {
-
         await this.pc.setRemoteDescription(new RTCSessionDescription(offer));
         const answer: RTCSessionDescriptionInit = await this.pc.createAnswer();
         await this.pc.setLocalDescription(answer);
@@ -60,17 +81,29 @@ export class PeerConnection {
             src: this.local,
             dest: this.remote
         }));
+        for (const c of this.pendingCandidates) {
+            try {
+                await this.pc.addIceCandidate(c);
+            } catch (e) {
+                console.error('Error adding received ice candidate', e);
+            }
+        }
+        this.pendingCandidates = [];
     }
 
-    private acceptAnswer = async (answer: RTCSessionDescriptionInit) => {
+    public acceptAnswer = async (answer: RTCSessionDescriptionInit) => {
         await this.pc.setRemoteDescription(new RTCSessionDescription(answer));
         for (const c of this.pendingCandidates) {
-            await this.pc.addIceCandidate(c);
+            try {
+                await this.pc.addIceCandidate(c);
+            } catch (e) {
+                console.error('Error adding received ice candidate', e);
+            }
         }
-        this.pendingCandidates.length = 0;
+        this.pendingCandidates = [];
     }
 
-    private addCandidate = async (candidate : RTCIceCandidate) => {
+    public addCandidate = async (candidate: RTCIceCandidate) => {
         if (this.pc.remoteDescription) {
             this.pc.addIceCandidate(candidate);
         } else {
