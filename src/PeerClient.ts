@@ -1,5 +1,5 @@
 import { Hash, Identity } from './Identity';
-import { PeerConnection } from './PeerConnection';
+import { PeerConnection, HardwareUsageInfo, PeerInfo, DEAD_STATES } from './PeerConnection';
 import { ConnectionTable } from './ConnectionTable';
 
 export const domain: string = "adbc-acc-test.duckdns.org";
@@ -11,7 +11,11 @@ export class PeerClient {
     private known: Map<Hash, PeerConnection> = new Map();
     private sessionId: Promise<Hash>;
 
-    constructor(private user: Identity, private table : ConnectionTable) {
+    private gpu?: GPUAdapter;
+    private triedGPU: boolean = false;
+    private advertisingInterval?: number;
+
+    constructor(private user: Identity, private table: ConnectionTable) {
         this.sessionId = this.user.generateSessionId();
         this.conf = {
             iceServers: [
@@ -20,7 +24,7 @@ export class PeerClient {
                 },
                 {
                     urls: `turn:${domain}:3478`,
-                    username:"test",
+                    username: "test",
                     credential: "test"
                 },
                 {
@@ -38,10 +42,28 @@ export class PeerClient {
         this.signal.addEventListener("close", this.close);
         this.signal.addEventListener("open", this.advertise);
 
+
     }
 
+    private queryUsage = async () => {
+        if (!this.gpu && !this.triedGPU) {
+            const adapter = await navigator.gpu.requestAdapter();
+            this.triedGPU = true;
+            if (adapter) this.gpu = adapter;
+        }
+        const estimate = await navigator.storage.estimate();
 
+        const usage: HardwareUsageInfo = {
+            cpus: navigator.hardwareConcurrency,
+            cpus_usage: 0,
+            gpu: this.gpu?.info,
+            gpu_usage: 0,
+            storageLimit: estimate.quota ? estimate.quota : 0,
+            storageUsed: estimate.usage ? estimate.usage : 0
+        }
 
+        return usage;
+    }
 
     private advertise = async () => {
         let info = {
@@ -50,19 +72,33 @@ export class PeerClient {
         };
 
         this.signal.send(JSON.stringify(info));
+
+        window.setTimeout(() => {
+            this.signal.send(JSON.stringify(info));
+        }, 5_000);
+    }
+
+    private peerChange = (info: PeerInfo) => {
+        this.table.handleEvent(info);
+        if (info.connection && DEAD_STATES.includes(info.connection.status)) {
+            this.known.get(info.peerId)?.destroy();
+            this.known.delete(info.peerId);
+        }
     }
 
     private offerConnectionToRemoteHost = async (remote: Hash) => {
-        const peer: PeerConnection = new PeerConnection(await this.sessionId, remote, this.conf, this.signal);
-        peer.on("stateChange", (data) => this.table.update(data));
+        if (this.known.has(remote)) return;
+        const peer: PeerConnection = new PeerConnection(await this.sessionId, remote, this.conf, this.signal, this.queryUsage);
+        peer.on("peerChange", this.peerChange);
         peer.createOffer();
         this.known.set(remote, peer);
     }
 
 
     private sendAnswer = async (offer: RTCSessionDescriptionInit, remote: Hash) => {
-        const peer: PeerConnection = new PeerConnection(await this.sessionId, remote, this.conf, this.signal);
-        peer.on("stateChange", (data) => this.table.update(data));
+        if (this.known.has(remote)) return;
+        const peer: PeerConnection = new PeerConnection(await this.sessionId, remote, this.conf, this.signal, this.queryUsage);
+        peer.on("peerChange", this.peerChange);
         peer.createAnswer(offer);
         this.known.set(remote, peer);
     }
