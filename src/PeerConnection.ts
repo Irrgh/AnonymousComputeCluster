@@ -1,6 +1,15 @@
+import { EventEmitter } from "./EventEmitter";
 import { Hash } from "./Identity";
 
-export class PeerConnection {
+export interface ConnectionStateData {
+    peerId: string;
+    status: RTCPeerConnectionState;
+    local: string;
+    remote: string;
+}
+
+
+export class PeerConnection extends EventEmitter<{ stateChange: ConnectionStateData }> {
 
     private pc: RTCPeerConnection;
     private channel?: RTCDataChannel;
@@ -12,6 +21,7 @@ export class PeerConnection {
         config: RTCConfiguration,
         private readonly ws: WebSocket
     ) {
+        super();
         this.remote = remote;
         this.pc = new RTCPeerConnection(config);
 
@@ -31,14 +41,18 @@ export class PeerConnection {
         })
 
         this.pc.addEventListener("connectionstatechange", async () => {
-            if (this.pc.connectionState === 'connected') {
-                const pair = this.pc.sctp?.transport.iceTransport.getSelectedCandidatePair()
+            const status = this.pc.connectionState;
+            let local = "-";
+            let remote = "-";
 
-                const local = `${pair?.local.type} : ${pair?.local.protocol}`;
-                const remote = `${pair?.remote.type} : ${pair?.remote.protocol}`;
-
-                console.log(local,remote);
+            if (status === "connected" && this.pc.sctp) {
+                const pair = this.pc.sctp.transport.iceTransport.getSelectedCandidatePair();
+                if (pair) {
+                    local = `${pair.local.type}[${pair.local.protocol}]`;
+                    remote = `${pair.remote.type}[${pair.remote.protocol}]`;
+                }
             }
+            this.emit("stateChange", { peerId: this.remote, status, local, remote });
         });
 
         this.pc.addEventListener("icecandidateerror", (e) => {

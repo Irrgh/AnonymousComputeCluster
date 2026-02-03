@@ -1,5 +1,6 @@
 import { Hash, Identity } from './Identity';
 import { PeerConnection } from './PeerConnection';
+import { ConnectionTable } from './ConnectionTable';
 
 export const domain: string = "adbc-acc-test.duckdns.org";
 
@@ -10,7 +11,7 @@ export class PeerClient {
     private known: Map<Hash, PeerConnection> = new Map();
     private sessionId: Promise<Hash>;
 
-    constructor(private user: Identity) {
+    constructor(private user: Identity, private table : ConnectionTable) {
         this.sessionId = this.user.generateSessionId();
         this.conf = {
             iceServers: [
@@ -53,6 +54,7 @@ export class PeerClient {
 
     private offerConnectionToRemoteHost = async (remote: Hash) => {
         const peer: PeerConnection = new PeerConnection(await this.sessionId, remote, this.conf, this.signal);
+        peer.on("stateChange", (data) => this.table.update(data));
         peer.createOffer();
         this.known.set(remote, peer);
     }
@@ -60,6 +62,7 @@ export class PeerClient {
 
     private sendAnswer = async (offer: RTCSessionDescriptionInit, remote: Hash) => {
         const peer: PeerConnection = new PeerConnection(await this.sessionId, remote, this.conf, this.signal);
+        peer.on("stateChange", (data) => this.table.update(data));
         peer.createAnswer(offer);
         this.known.set(remote, peer);
     }

@@ -12,9 +12,7 @@ export class Identity {
     public async generateSessionId(): Promise<string> {
         const exported = await crypto.subtle.exportKey("spki", this.keyPair.publicKey);
         const hash = await crypto.subtle.digest("SHA-256", exported);
-        return [...new Uint8Array(hash)]
-            .map(b => b.toString(16))
-            .join("");
+        return new Uint8Array(hash).toBase64({omitPadding:true});
     }
 
     public static async FromFile(file: File): Promise<Identity> {
