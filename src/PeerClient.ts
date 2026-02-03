@@ -1,6 +1,7 @@
 import { Hash, Identity } from './Identity';
 import { PeerConnection, HardwareUsageInfo, PeerInfo, DEAD_STATES } from './PeerConnection';
 import { ConnectionTable } from './ConnectionTable';
+import { TaskPool } from './TaskPool';
 
 export const domain: string = "adbc-acc-test.duckdns.org";
 
@@ -11,11 +12,9 @@ export class PeerClient {
     private known: Map<Hash, PeerConnection> = new Map();
     private sessionId: Promise<Hash>;
 
-    private gpu?: GPUAdapter;
-    private triedGPU: boolean = false;
     private advertisingInterval?: number;
 
-    constructor(private user: Identity, private table: ConnectionTable) {
+    constructor(private user: Identity, private table: ConnectionTable, private taskPool : TaskPool) {
         this.sessionId = this.user.generateSessionId();
         this.conf = {
             iceServers: [
@@ -45,26 +44,6 @@ export class PeerClient {
 
     }
 
-    private queryUsage = async () => {
-        if (!this.gpu && !this.triedGPU) {
-            const adapter = await navigator.gpu.requestAdapter();
-            this.triedGPU = true;
-            if (adapter) this.gpu = adapter;
-        }
-        const estimate = await navigator.storage.estimate();
-
-        const usage: HardwareUsageInfo = {
-            cpus: navigator.hardwareConcurrency,
-            cpus_usage: 0,
-            gpu: this.gpu?.info,
-            gpu_usage: 0,
-            storageLimit: estimate.quota ? estimate.quota : 0,
-            storageUsed: estimate.usage ? estimate.usage : 0
-        }
-
-        return usage;
-    }
-
     private advertise = async () => {
         let info = {
             type: "advertise",
@@ -88,7 +67,7 @@ export class PeerClient {
 
     private offerConnectionToRemoteHost = async (remote: Hash) => {
         if (this.known.has(remote)) return;
-        const peer: PeerConnection = new PeerConnection(await this.sessionId, remote, this.conf, this.signal, this.queryUsage);
+        const peer: PeerConnection = new PeerConnection(await this.sessionId, remote, this.conf, this.signal, this.taskPool);
         peer.on("peerChange", this.peerChange);
         peer.createOffer();
         this.known.set(remote, peer);
@@ -97,7 +76,7 @@ export class PeerClient {
 
     private sendAnswer = async (offer: RTCSessionDescriptionInit, remote: Hash) => {
         if (this.known.has(remote)) return;
-        const peer: PeerConnection = new PeerConnection(await this.sessionId, remote, this.conf, this.signal, this.queryUsage);
+        const peer: PeerConnection = new PeerConnection(await this.sessionId, remote, this.conf, this.signal, this.taskPool);
         peer.on("peerChange", this.peerChange);
         peer.createAnswer(offer);
         this.known.set(remote, peer);

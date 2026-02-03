@@ -35,9 +35,9 @@ export class ConnectionTable {
                 <td></td>
                 <td></td>
                 <td></td>
-                <td></td>
-                <td></td>
-                <td></td>
+                <td><div class="spinner-border spinner-border-sm" role="status"></div></td>
+                <td><div class="spinner-border spinner-border-sm" role="status"></div></td>
+                <td><div class="spinner-border spinner-border-sm" role="status"></div></td>
             `;
             this.tbody.appendChild(row);
         }
@@ -71,20 +71,16 @@ export class ConnectionTable {
               /
               <i class="bi bi-arrow-up"></i> ${this.formatBps(traffic.up)}
             `;
-        } else {
-            row.cells[3].textContent = "-";
-        }
-
-        // CPU
+        } 
+        
+        
         if (hardware) {
             row.cells[4].textContent =
                 `${hardware.cpus_usage}% / ${hardware.cpus * 100}%`;
             row.cells[5].textContent =
                 `${this.formatBytes(hardware.storageUsed)} / ${this.formatBytes(hardware.storageLimit)}`;
-        } else {
-            row.cells[4].textContent = "-";
-            row.cells[5].textContent = "-";
-        }
+        } 
+        
     }
 
     private updateRowStyle(

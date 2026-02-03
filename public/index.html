@@ -7,7 +7,7 @@
   <head>
     <meta charset="utf-8" />
     <meta http-equiv="X-UA-Compatible" content="IE=edge" />
-    <title></title>
+    <title>Compute Cluster</title>
     <meta name="description" content="" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <link rel="stylesheet" href="" />
@@ -39,7 +39,7 @@
       <input class="form-control" type="file" id="login" />
     </div>
     <span id="user"></span>
-    <input type="range" min="1" max="1" step="1" value="1" id="core-count">
+    <input type="range" min="1" max="1" step="1" value="1" id="core-count" />
     <hr />
     <table id="connections" class="table table-hover table-bordered p-3">
       <thead class="table-primary">
@@ -59,7 +59,29 @@
       </thead>
       <tbody></tbody>
     </table>
-
+    <div class="form-check">
+        <input
+          class="form-check-input"
+          type="radio"
+          name="radioDefault"
+          id="radioDefault1"
+        />
+        <label class="form-check-label" for="radioDefault1">
+          hello world
+        </label>
+      </div>
+      <div class="form-check">
+        <input
+          class="form-check-input"
+          type="radio"
+          name="radioDefault"
+          id="radioDefault2"
+          checked
+        />
+        <label class="form-check-label" for="radioDefault2">
+          file hashing
+        </label>
+      </div>
     <script
       src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/js/bootstrap.bundle.min.js"
       integrity="sha384-FKyoEForCGlyvwx9Hj09JcYn3nv7wiPVlz7YYwJrWVcXK/BmnVDxM+D2scQbITxI"

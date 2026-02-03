@@ -1,5 +1,6 @@
 import { EventEmitter } from "./EventEmitter";
 import { Hash } from "./Identity";
+import { TaskPool } from "./TaskPool";
 
 
 export interface PeerInfo {
@@ -30,6 +31,7 @@ export interface TrafficInfo {
     down: number, // bytes per second
 }
 
+
 export interface PeerEvent {
     peerChange: PeerInfo
 }
@@ -48,13 +50,14 @@ export class PeerConnection extends EventEmitter<PeerEvent> {
     private pendingCandidates: RTCIceCandidate[] = [];
     public remoteUsage?: HardwareUsageInfo;
     private hardwareInterval?: number;
+    private trafficInterval?: number;
 
     constructor(
         readonly local: Hash,
         readonly remote: Hash,
         config: RTCConfiguration,
         private readonly ws: WebSocket,
-        private readonly hardware: () => Promise<HardwareUsageInfo>
+        private readonly taskpool: TaskPool
     ) {
         super();
         this.remote = remote;
@@ -77,14 +80,12 @@ export class PeerConnection extends EventEmitter<PeerEvent> {
 
         this.pc.addEventListener("connectionstatechange", async () => {
             const status = this.pc.connectionState;
-            let local = "-";
-            let remote = "-";
 
-            let keypair = this.pc.sctp?.transport.iceTransport.getSelectedCandidatePair();
+            let kp = this.pc.sctp?.transport.iceTransport.getSelectedCandidatePair();
 
             this.emit("peerChange", {
                 peerId: this.remote,
-                connection: { status, keypair: keypair ? keypair : undefined }
+                connection: { status, keypair: kp ? kp : undefined }
             });
         });
 
@@ -117,13 +118,51 @@ export class PeerConnection extends EventEmitter<PeerEvent> {
         this.hardwareInterval = window.setInterval(async () => {
             if (this.channel?.readyState !== "open") return;
 
-            const usage = await this.hardware();
+            const usage = await this.taskpool.queryUsage();
 
             this.channel.send(JSON.stringify({
                 type: "hardware",
                 data: usage
             }));
         }, 1000);
+
+        let lastStats: RTCStatsReport;
+
+        this.trafficInterval = window.setInterval(async () => {
+            this.pc.getStats().then((stats) => {
+
+                if (lastStats) {
+                    stats.forEach(report => {
+                        const prev = lastStats.get(report.id);
+                        if (!prev) return;
+
+                        const dt = (report.timestamp - prev.timestamp) / 1000;
+                        if (dt <= 0) return;
+
+                        // Upload
+                        if (report.type === "outbound-rtp" && report.bytesSent != null) {
+                            const bitrate =
+                                ((report.bytesSent - prev.bytesSent) * 8) / dt;
+
+                            console.log("⬆️ upload kbps:", (bitrate / 1000).toFixed(1));
+                        }
+
+                        // Download
+                        if (report.type === "inbound-rtp" && report.bytesReceived != null) {
+                            const bitrate =
+                                ((report.bytesReceived - prev.bytesReceived) * 8) / dt;
+
+                            console.log("⬇️ download kbps:", (bitrate / 1000).toFixed(1));
+                        }
+                    });
+                }
+
+                lastStats = stats;
+
+            });
+        }, 1000);
+
+
     }
 
     private stopHardwareReport = async () => {
@@ -139,8 +178,6 @@ export class PeerConnection extends EventEmitter<PeerEvent> {
         this.channel.onmessage = (e) => {
             const msg = JSON.parse(e.data);
 
-            console.log(msg);
-
             if (msg.type === "hardware") {
                 this.remoteUsage = msg.data;
 
@@ -149,6 +186,37 @@ export class PeerConnection extends EventEmitter<PeerEvent> {
                     hardware: msg.data
                 });
             }
+            if (msg.type === "task-create") {
+                this.taskpool.uploadTask({
+                    id: msg.id,
+                    code: msg.code
+                });
+            }
+            if (msg.type === "task-execute") {
+                this.taskpool.enqueueTask({
+                    id: msg.id,
+                    funcArgs: msg.funcArgs
+                }).then(result => {
+
+                    if (this.channel && this.pc.connectionState === "connected") {
+                        this.channel.send(JSON.stringify({
+                            type: "task-result",
+                            id: msg.id,
+                            result: result
+                        }));
+
+                    } else {
+
+                        // persist
+
+                    }
+
+
+
+                });
+            }
+
+
         };
     }
 
