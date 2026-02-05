@@ -21,16 +21,27 @@ export class TaskPool {
 
     private gpu?: GPUAdapter;
     private triedGPU: boolean = false;
+    private usage: number[] = [];
 
-    private codeCache : Map<string, ArrayBuffer> = new Map();
+    private codeCache: Map<string, ArrayBuffer> = new Map();
 
     private readonly TIMEOUT_MS = 5000;
 
     constructor(private size: number) {
         for (let i = 0; i < size; i++) {
-            this.initWorkerCode();
             this.workers[i] = this.createWorker(i);
             this.idleWorkers.push(i);
+
+            this.workers[i].addEventListener("message", (e) => {
+                
+                if (e.data.type === "usage") {
+                    this.usage[e.data.thread] = Math.round(e.data.cpu * 100);
+                }
+
+
+            });
+
+
         }
     }
 
@@ -44,9 +55,16 @@ export class TaskPool {
         }
         const estimate = await navigator.storage.estimate();
 
+        let cpuUsage = 0.0;
+
+        this.usage.forEach(element => {
+            cpuUsage += element;
+        });
+
+
         const usage: HardwareUsageInfo = {
             cpus: navigator.hardwareConcurrency,
-            cpus_usage: 0,
+            cpus_usage: cpuUsage,
             gpu: this.gpu?.info,
             gpu_usage: 0,
             storageLimit: estimate.quota ? estimate.quota : 0,
@@ -77,11 +95,11 @@ export class TaskPool {
                     } else if (e.data.type === "started") {
                         //console.log("started");
                         timeout = setTimeout(async () => {
-                            this.regenerateWorker(worker,workerId);
+                            this.regenerateWorker(worker, workerId);
                             reject(new Error("Task timed out"));
                         }, this.TIMEOUT_MS);
                     } else if (e.data.type === "error") {
-                        this.regenerateWorker(worker,workerId);
+                        this.regenerateWorker(worker, workerId);
                         reject(new Error(e.data.error));
                     }
                 };
@@ -100,7 +118,7 @@ export class TaskPool {
         });
     }
 
-    private regenerateWorker = async (worker:Worker, workerId : number) => {
+    private regenerateWorker = async (worker: Worker, workerId: number) => {
         worker.terminate();
         this.workers[workerId] = this.createWorker(workerId);
         // TODO: maybe reupload code here
@@ -157,10 +175,31 @@ export class TaskPool {
         );
     }
 
-    private initWorkerCode = () => {
+    private createWorker = (workerId: number) => {
         const workerCode = `
         //# sourceURL = task-pool-worker
         const programs = {};
+        const thread = ${workerId}
+
+        let busyTime = 0;
+        let windowStart = performance.now();
+
+        setInterval(() => {
+            const now = performance.now();
+            const elapsed = now - windowStart;
+
+            const utilization = Math.min(busyTime / elapsed, 1);
+
+            postMessage({
+                type: "usage",
+                cpu: utilization, // 0.0 → 1.0
+                thread
+            });
+
+            // reset window
+            busyTime = 0;
+            windowStart = now;
+        }, 1000);
 
         const importCode = async (progId, codeURL) => {
             return import(codeURL).then((module) => {
@@ -170,7 +209,8 @@ export class TaskPool {
     
         self.onmessage = async (event) => {
             const { type, progId, taskId, args } = event.data;
-        
+            const start = performance.now();
+
             try {
                 if (type === 'upload') {
                     await importCode(progId, args.codeURL);
@@ -191,16 +231,20 @@ export class TaskPool {
                     taskId,
                     error: err?.message ?? String(err)
                 });
-            }
-            
+            }  
+            busyTime += performance.now() - start;  
         }`;
 
         const blob = new Blob([workerCode], { type: 'application/javascript' });
-        this.workerCode = URL.createObjectURL(blob);
-    }
+        const url = URL.createObjectURL(blob);
 
-    private createWorker = (workerId: number) => {
-        return new Worker(this.workerCode!, { name: `task-pool-worker-${workerId}` });
+        const worker = new Worker(url, { name: `task-pool-worker-${workerId}` });
+
+        setTimeout(() => {
+            URL.revokeObjectURL(url);
+        }, 1000);
+
+        return worker;
     };
 
 }
