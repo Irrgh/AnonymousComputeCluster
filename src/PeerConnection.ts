@@ -1,6 +1,6 @@
 import { EventEmitter } from "./EventEmitter";
 import { Hash } from "./Identity";
-import { TaskPool } from "./TaskPool";
+import { Task, TaskPool, TaskInit } from './TaskPool';
 
 
 export interface PeerInfo {
@@ -52,6 +52,9 @@ export class PeerConnection extends EventEmitter<PeerEvent> {
     private hardwareInterval?: number;
     private trafficInterval?: number;
 
+    private ready!: Promise<void>;
+    private readyResolve!: () => void;
+
     constructor(
         readonly local: Hash,
         readonly remote: Hash,
@@ -62,6 +65,10 @@ export class PeerConnection extends EventEmitter<PeerEvent> {
         super();
         this.remote = remote;
         this.pc = new RTCPeerConnection(config);
+
+        this.ready = new Promise<void>((resolve) => {
+            this.readyResolve = resolve;
+        });
 
         this.pc.addEventListener("icecandidate", (e) => {
             if (e.candidate) {
@@ -89,26 +96,67 @@ export class PeerConnection extends EventEmitter<PeerEvent> {
             });
         });
 
-        this.pc.addEventListener("icecandidateerror", (e) => {
-
-        });
-
-        this.pc.addEventListener("iceconnectionstatechange", async () => {
-            //console.log(`[${this.remote}] ICE`, this.pc.iceConnectionState);
-        });
-
         this.pc.addEventListener("datachannel", (e) => {
             this.channel = e.channel;
             this.channel.onopen = () => {
                 console.log(`[${this.remote}] DataChannel open`);
                 this.setupChannelHandlers();
                 this.startHardwareReport();
+                this.readyResolve();
             }
 
             this.channel.onclose = () => {
                 console.log(`[${this.remote}] DataChannel closed`);
                 this.stopHardwareReport();
             }
+        });
+    }
+
+    public uploadTaskProgram = async (init: TaskInit): Promise<void> => {
+        return new Promise(async (resolve, reject) => {
+            await this.ready;
+
+            const responseHandler = (e: MessageEvent) => {
+                const msg = JSON.parse(e.data);
+                if (msg.type === "task-created") {
+
+                    this.channel!.removeEventListener("message", responseHandler);
+                    resolve();
+                }
+            }
+
+            this.channel!.addEventListener("message", responseHandler);
+            this.channel!.send(JSON.stringify({
+                type: "task-create",
+                progId: init.progId,
+                code: init.code
+            }));
+
+        });
+    }
+
+
+    public enqueueTask = async <T = any>(task: Task): Promise<T> => {
+        return new Promise(async (resolve, reject) => {
+            await this.ready;
+
+            // TODO add rejection in here
+            const responseHandler = (e: MessageEvent) => {
+                const msg = JSON.parse(e.data);
+                if (msg.type === "task-result" && msg.taskId === task.taskId) {
+
+                    this.channel!.removeEventListener("message", responseHandler);
+                    resolve(msg.result);
+                }
+            }
+
+            this.channel!.addEventListener("message", responseHandler);
+            this.channel!.send(JSON.stringify({
+                type: "task-execute",
+                progId: task.progId,
+                taskId: task.taskId,
+                funcArgs: task.funcArgs
+            }));
         });
     }
 
@@ -126,39 +174,37 @@ export class PeerConnection extends EventEmitter<PeerEvent> {
             }));
         }, 1000);
 
-        let lastStats: RTCStatsReport;
+        let lastTransport: any;
 
         this.trafficInterval = window.setInterval(async () => {
             this.pc.getStats().then((stats) => {
+                stats.forEach(report => {
+                    if (report.type !== "transport") return;
 
-                if (lastStats) {
-                    stats.forEach(report => {
-                        const prev = lastStats.get(report.id);
-                        if (!prev) return;
+                    if (!lastTransport) {
+                        lastTransport = report;
+                        return;
+                    }
 
-                        const dt = (report.timestamp - prev.timestamp) / 1000;
-                        if (dt <= 0) return;
+                    const dt = (report.timestamp - lastTransport.timestamp) / 1000;
+                    if (dt <= 0) return;
 
-                        // Upload
-                        if (report.type === "outbound-rtp" && report.bytesSent != null) {
-                            const bitrate =
-                                ((report.bytesSent - prev.bytesSent) * 8) / dt;
+                    const upBps =
+                        ((report.bytesSent - lastTransport.bytesSent) * 8) / dt;
+                    const downBps =
+                        ((report.bytesReceived - lastTransport.bytesReceived) * 8) / dt;
 
-                            console.log("⬆️ upload kbps:", (bitrate / 1000).toFixed(1));
-                        }
 
-                        // Download
-                        if (report.type === "inbound-rtp" && report.bytesReceived != null) {
-                            const bitrate =
-                                ((report.bytesReceived - prev.bytesReceived) * 8) / dt;
-
-                            console.log("⬇️ download kbps:", (bitrate / 1000).toFixed(1));
+                    this.emit("peerChange", {
+                        peerId: this.remote,
+                        traffic: {
+                            up: upBps,
+                            down: downBps
                         }
                     });
-                }
 
-                lastStats = stats;
-
+                    lastTransport = report;
+                });
             });
         }, 1000);
 
@@ -168,6 +214,8 @@ export class PeerConnection extends EventEmitter<PeerEvent> {
     private stopHardwareReport = async () => {
         if (this.hardwareInterval) {
             clearInterval(this.hardwareInterval);
+            clearInterval(this.trafficInterval);
+            this.trafficInterval = undefined;
             this.hardwareInterval = undefined;
         }
     }
@@ -175,8 +223,11 @@ export class PeerConnection extends EventEmitter<PeerEvent> {
     private setupChannelHandlers() {
         if (!this.channel) return;
 
+
         this.channel.onmessage = (e) => {
             const msg = JSON.parse(e.data);
+
+            //console.warn(msg);
 
             if (msg.type === "hardware") {
                 this.remoteUsage = msg.data;
@@ -188,23 +239,26 @@ export class PeerConnection extends EventEmitter<PeerEvent> {
             }
             if (msg.type === "task-create") {
                 this.taskpool.uploadTask({
-                    id: msg.id,
+                    progId: msg.progId,
                     code: msg.code
+                }).then(() => {
+                    this.channel?.send(JSON.stringify({
+                        type: "task-created"
+                    }));
                 });
             }
             if (msg.type === "task-execute") {
                 this.taskpool.enqueueTask({
-                    id: msg.id,
+                    progId: msg.progId,
+                    taskId: msg.taskId,
                     funcArgs: msg.funcArgs
                 }).then(result => {
-
                     if (this.channel && this.pc.connectionState === "connected") {
                         this.channel.send(JSON.stringify({
                             type: "task-result",
-                            id: msg.id,
+                            taskId: msg.taskId,
                             result: result
                         }));
-
                     } else {
 
                         // persist

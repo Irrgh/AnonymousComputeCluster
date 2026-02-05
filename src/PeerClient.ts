@@ -1,7 +1,7 @@
 import { Hash, Identity } from './Identity';
 import { PeerConnection, HardwareUsageInfo, PeerInfo, DEAD_STATES } from './PeerConnection';
 import { ConnectionTable } from './ConnectionTable';
-import { TaskPool } from './TaskPool';
+import { TaskInit, TaskPool } from './TaskPool';
 
 export const domain: string = "adbc-acc-test.duckdns.org";
 
@@ -14,7 +14,7 @@ export class PeerClient {
 
     private advertisingInterval?: number;
 
-    constructor(private user: Identity, private table: ConnectionTable, private taskPool : TaskPool) {
+    constructor(private user: Identity, private table: ConnectionTable, private taskPool: TaskPool) {
         this.sessionId = this.user.generateSessionId();
         this.conf = {
             iceServers: [
@@ -103,7 +103,7 @@ export class PeerClient {
 
         const { type } = message;
 
-        console.log(message);
+        //console.log(message);
 
         switch (type) {
             case "advertise": this.offerConnectionToRemoteHost(message.hash); break;
@@ -120,4 +120,35 @@ export class PeerClient {
     private close = (event: CloseEvent) => {
         console.error(event);
     };
+
+    public submitTasks = async (progId: string, code: string, funcArgs: any[][]) => {
+
+        const init: TaskInit = {
+            progId,
+            code
+        };
+
+        let index = 0;
+
+        let results = [];
+
+        this.known.forEach((peer) => {
+            //console.log("uploading program");
+            peer.uploadTaskProgram(init).then(() => {
+                while (index < funcArgs.length) {
+                    const id = index++;
+                    //console.log(`scheduled ${id}`);
+                    peer.enqueueTask({
+                        progId,
+                        taskId: crypto.randomUUID(),
+                        funcArgs: funcArgs[id]
+                    }).then(result => {
+                        console.log(`remote peer [${peer.remote}] calculated:`, result);
+                    });
+                }
+            })
+        });
+
+    }
+
 }

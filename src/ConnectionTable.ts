@@ -107,17 +107,16 @@ export class ConnectionTable {
     }
 
     private formatBps(bytesPerSec: number): string {
-        if (bytesPerSec < 1024) return `${bytesPerSec} B/s`;
-        if (bytesPerSec < 1024 ** 2) return `${(bytesPerSec / 1024).toFixed(1)} KB/s`;
-        if (bytesPerSec < 1024 ** 3) return `${(bytesPerSec / 1024).toFixed(1)} MB/s`;
-        return `${(bytesPerSec / 1024 ** 3).toFixed(1)} MB/s`;
+        if (bytesPerSec < 1024 ** 2) return `${(bytesPerSec / 1024).toFixed(1).padStart(6)} Kb/s`;
+        if (bytesPerSec < 1024 ** 3) return `${(bytesPerSec / 1024).toFixed(1).padStart(6)} Mb/s`;
+        return `${(bytesPerSec / 1024 ** 3).toFixed(1).padStart(6)} Gb/s`;
     }
 
     private formatBytes(bytes: number): string {
-        if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KB`;
-        if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
-        if (bytes < 1024 ** 4) return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
-        return `${(bytes / 1024 ** 4).toFixed(1)} TB`;
+        if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1).padStart(6)} KB`;
+        if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1).padStart(6)} MB`;
+        if (bytes < 1024 ** 4) return `${(bytes / 1024 ** 3).toFixed(1).padStart(6)} GB`;
+        return `${(bytes / 1024 ** 4).toFixed(1).padStart(6)} TB`;
     }
 
 }

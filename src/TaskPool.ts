@@ -1,12 +1,13 @@
 import { HardwareUsageInfo } from "./PeerConnection";
 
 export interface TaskInit {
-    id: string,
-    code: ArrayBuffer, // code always has a main(args[]) function
+    progId: string,
+    code: string, // code always has a main(args[]) function
 }
 
 export interface Task {
-    id: string,
+    progId: string,
+    taskId: string,
     funcArgs: any
 }
 
@@ -16,13 +17,12 @@ export class TaskPool {
     private workerCode?: string;
     private workers: Worker[] = [];
     private idleWorkers: number[] = [];
-    private taskQueue: Task[] = [];
-    private pending = new Map<
-        string,
-        { resolve: Function; reject: Function; timeout: any; workerId: number }
-    >();
-    private gpu? : GPUAdapter;
-    private triedGPU : boolean = false;
+    private idleWaiters: ((id: number) => void)[] = [];
+
+    private gpu?: GPUAdapter;
+    private triedGPU: boolean = false;
+
+    private codeCache : Map<string, ArrayBuffer> = new Map();
 
     private readonly TIMEOUT_MS = 5000;
 
@@ -30,15 +30,11 @@ export class TaskPool {
         for (let i = 0; i < size; i++) {
             this.initWorkerCode();
             this.workers[i] = this.createWorker(i);
+            this.idleWorkers.push(i);
         }
     }
 
-    public enqueueTask(task: Task): Promise<any> {
-        return new Promise((resolve, reject) => {
-            this.taskQueue.push(task);
-            this.processQueue(resolve, reject);
-        });
-    }
+
 
     public queryUsage = async () => {
         if (!this.gpu && !this.triedGPU) {
@@ -60,64 +56,77 @@ export class TaskPool {
         return usage;
     }
 
+    public enqueueTask(task: Task): Promise<any> {
+        return new Promise(async (resolve, reject) => {
+            try {
+                const workerId = await this.scheduleIdleWorkerId();
+                const worker = this.workers[workerId];
+                console.log(`processing on worker ${workerId}`);
 
-    private processQueue(resolve?: Function, reject?: Function) {
-        if (this.taskQueue.length === 0) return;
-        if (this.idleWorkers.length === 0) return;
+                let timeout: number;
 
-        const workerId = this.idleWorkers.pop()!;
-        const worker = this.workers[workerId];
-        const task = this.taskQueue.shift()!;
+                const onMessage = (e: MessageEvent) => {
+                    if (e.data.taskId !== task.taskId) return;
 
-        const timeout = setTimeout(() => {
-            // hard kill
-            worker.terminate();
-            this.workers[workerId] = this.createWorker(workerId);
-            this.idleWorkers.push(workerId);
+                    if (e.data.type === "result") {
+                        //console.log("finished!");
+                        clearTimeout(timeout);
+                        worker.removeEventListener("message", onMessage);
+                        this.releaseWorker(workerId);
+                        resolve(e.data.data);
+                    } else if (e.data.type === "started") {
+                        //console.log("started");
+                        timeout = setTimeout(async () => {
+                            this.regenerateWorker(worker,workerId);
+                            reject(new Error("Task timed out"));
+                        }, this.TIMEOUT_MS);
+                    } else if (e.data.type === "error") {
+                        this.regenerateWorker(worker,workerId);
+                        reject(new Error(e.data.error));
+                    }
+                };
 
-            this.pending.get(task.id)?.reject(
-                new Error("Task timed out")
-            );
-            this.pending.delete(task.id);
+                worker.addEventListener("message", onMessage);
 
-            // continue processing
-            this.processQueue();
-        }, this.TIMEOUT_MS);
-
-        const onMessage = (e: MessageEvent) => {
-            if (e.data.id !== task.id) return;
-
-            clearTimeout(timeout);
-            worker.removeEventListener("message", onMessage);
-            this.idleWorkers.push(workerId);
-
-            if (e.data.type === "result") {
-                this.pending.get(task.id)?.resolve(e.data.result);
-            } else {
-                this.pending.get(task.id)?.reject(new Error(e.data.error));
+                worker.postMessage({
+                    type: "execute",
+                    progId: task.progId,
+                    taskId: task.taskId,
+                    args: { funcArgs: task.funcArgs },
+                });
+            } catch (err) {
+                reject(err);
             }
-
-            this.pending.delete(task.id);
-            this.processQueue();
-        };
-
-        worker.addEventListener("message", onMessage);
-
-        this.pending.set(task.id, {
-            resolve: resolve!,
-            reject: reject!,
-            timeout,
-            workerId,
-        });
-
-        worker.postMessage({
-            id: task.id,
-            type: "execute",
-            args: { funcArgs: task.funcArgs },
         });
     }
 
+    private regenerateWorker = async (worker:Worker, workerId : number) => {
+        worker.terminate();
+        this.workers[workerId] = this.createWorker(workerId);
+        // TODO: maybe reupload code here
+        this.releaseWorker(workerId);
+    }
 
+
+    private scheduleIdleWorkerId(): Promise<number> {
+        return new Promise((resolve) => {
+            const workerId = this.idleWorkers.pop();
+            if (workerId !== undefined) {
+                resolve(workerId);
+            } else {
+                this.idleWaiters.push(resolve);
+            }
+        });
+    }
+
+    private releaseWorker(workerId: number) {
+        const waiter = this.idleWaiters.shift();
+        if (waiter) {
+            waiter(workerId);
+        } else {
+            this.idleWorkers.push(workerId);
+        }
+    }
 
     public uploadTask = async (task: TaskInit) => {
         const blob = new Blob([task.code], {
@@ -125,11 +134,11 @@ export class TaskPool {
         });
         const url = URL.createObjectURL(blob);
 
-        await Promise.all(
+        return Promise.all(
             this.workers.map((worker, workerId) => {
                 return new Promise<void>((resolve, reject) => {
                     const handler = (e: MessageEvent) => {
-                        if (e.data.id === task.id && e.data.type === "uploaded") {
+                        if (e.data.progId === task.progId && e.data.type === "uploaded") {
                             worker.removeEventListener("message", handler);
                             resolve();
                         } else {
@@ -140,7 +149,7 @@ export class TaskPool {
                     worker.addEventListener("message", handler);
                     worker.postMessage({
                         type: 'upload',
-                        id: task.id,
+                        progId: task.progId,
                         args: { codeURL: url },
                     });
                 });
@@ -151,31 +160,35 @@ export class TaskPool {
     private initWorkerCode = () => {
         const workerCode = `
         //# sourceURL = task-pool-worker
-        const userCode = {};
+        const programs = {};
 
-        const importCode = async (taskId, codeURL) => {
-            import(codeURL).then((module) => {
-                userCode[taskId] = module.main;
-        });
+        const importCode = async (progId, codeURL) => {
+            return import(codeURL).then((module) => {
+                programs[progId] = module.main;
+            });
         }
     
         self.onmessage = async (event) => {
-            const { id, type, args } = event.data;
+            const { type, progId, taskId, args } = event.data;
         
             try {
                 if (type === 'upload') {
-                    await importCode(id, args.codeURL);
-                    postMessage({ id, type: "uploaded" });
+                    await importCode(progId, args.codeURL);
+                    postMessage({ type: "uploaded", progId });
                 }
                 if (type === 'execute') {   
-                    userCode[id].main(...(args.funcArgs)).then((res) => {
-                        postMessage({id, type:"result", data:res});
-                    });
+                    const fn = programs[progId];
+                    if (!fn) throw new Error("Program not uploaded: " + progId);
+
+                    postMessage({type:"started", taskId});
+                    const result = await fn(...args.funcArgs);
+                    postMessage({type:"result", taskId, data:result});
                 }
-            } catch {
+            } catch (err) {
                 postMessage({
-                    id,
                     type: "error",
+                    progId,
+                    taskId,
                     error: err?.message ?? String(err)
                 });
             }
@@ -186,8 +199,8 @@ export class TaskPool {
         this.workerCode = URL.createObjectURL(blob);
     }
 
-    private createWorker = (workerId : number) => {
-        return new Worker(this.workerCode!, {name:`task-pool-worker-${workerId}`});
+    private createWorker = (workerId: number) => {
+        return new Worker(this.workerCode!, { name: `task-pool-worker-${workerId}` });
     };
 
 }
