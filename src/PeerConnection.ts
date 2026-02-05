@@ -312,6 +312,7 @@ export class PeerConnection extends EventEmitter<PeerEvent> {
             console.log(`[${this.remote}] DataChannel open (offerer)`);
             this.setupChannelHandlers();
             this.startHardwareReport();
+            this.readyResolve();
         };
 
         this.channel.onclose = () => {
