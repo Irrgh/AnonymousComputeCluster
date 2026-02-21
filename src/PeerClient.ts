@@ -22,6 +22,9 @@ export class PeerClient {
                     urls: `stun:${domain}:3478`
                 },
                 {
+                    urls: `stun:l.google.com:19302`
+                },
+                {
                     urls: `turn:${domain}:3478`,
                     username: "test",
                     credential: "test"
